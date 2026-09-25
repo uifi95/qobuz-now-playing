@@ -1,15 +1,14 @@
-// Keeps the Qobuz -> macOS Now Playing bridge alive.
-// - If Qobuz was just launched normally (no debug port), relaunch it with a
-//   localhost-only debug port. Only done in the first START_WINDOW_S seconds
-//   after launch so an in-progress listening session is never interrupted.
-// - Whenever the Qobuz page lacks the current bridge (first load, reload,
-//   bridge update), inject it.
-// - Once the bridge is in, release Qobuz's media-key shortcuts through a
-//   one-shot Node inspector on the main process, then close the inspector.
-//   Electron's media-key globalShortcuts swallow every macOS Now Playing
-//   command, so without this Control Center can't seek and the bridge's
-//   handlers never run. Warns if Qobuz has Accessibility access, which lets
-//   Chromium grab the keyboard media keys from whatever else is playing.
+// Keeps the Qobuz -> macOS Now Playing bridge alive, without restarting Qobuz.
+// - For each Qobuz launch, and whenever bridge.js changes, send SIGUSR1 to the
+//   Qobuz main process. Node opens its inspector on 127.0.0.1 in response.
+// - Through the inspector, install a small host in the main process that
+//   injects the bridge into the Qobuz page, again after every reload, then
+//   releases Qobuz's media-key shortcuts. Electron's media-key globalShortcuts
+//   swallow every macOS Now Playing command, so without this Control Center
+//   can't seek and the bridge's handlers never run.
+// - Close the inspector again, so no debug port stays open.
+// Warns if Qobuz has Accessibility access, which lets Chromium grab the
+// keyboard media keys from whatever else is playing.
 // Runs on bun or node >= 22 (needs global fetch and WebSocket).
 import { execFile } from 'node:child_process';
 import { readFileSync, appendFileSync } from 'node:fs';
@@ -19,10 +18,11 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 const DIR = dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.QOBUZ_NP_PORT) || 9333;
-const INSPECT_PORT = Number(process.env.QOBUZ_NP_INSPECT_PORT) || 9334;
 const POLL_MS = 3000;
-const START_WINDOW_S = 30;
+// Node installs its SIGUSR1 handler early in startup; before that the signal
+// would terminate Qobuz, so leave a just-started process alone for a moment.
+const MIN_UPTIME_S = 3;
+const MAX_ATTEMPTS = 5;
 
 const log = (msg) => {
   try {
@@ -30,7 +30,10 @@ const log = (msg) => {
   } catch {}
 };
 
-const qobuzUptime = async () => {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The Qobuz main process: pid and seconds since launch.
+const qobuzProcess = async () => {
   try {
     const { stdout } = await run('/bin/ps', ['-axo', 'pid=,etime=,comm=']);
     const line = stdout
@@ -38,43 +41,57 @@ const qobuzUptime = async () => {
       .find((l) => l.trim().endsWith('/Qobuz.app/Contents/MacOS/Qobuz'));
     if (!line) return null;
     // etime: [[dd-]hh:]mm:ss
-    const etime = line.trim().split(/\s+/)[1];
+    const [pid, etime] = line.trim().split(/\s+/);
     const [days, rest] = etime.includes('-') ? etime.split('-') : ['0', etime];
     const parts = rest.split(':').map(Number);
     while (parts.length < 3) parts.unshift(0);
-    return Number(days) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return { pid: Number(pid), uptime: Number(days) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2] };
   } catch {
     return null;
   }
 };
 
-const targets = async (port) => {
+// The main process's inspector target. It listens on process.debugPort
+// (9229 unless Qobuz was started with --inspect), so look up the port by pid.
+const inspectorTarget = async (pid) => {
+  let ports = [];
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1000) });
-    return await res.json();
-  } catch {
-    return [];
+    const { stdout } = await run('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-Fn']);
+    ports = [...stdout.matchAll(/^n127\.0\.0\.1:(\d+)$/gm)].map((m) => m[1]);
+  } catch {}
+  for (const port of ports) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1000) });
+      const node = (await res.json()).find((t) => t.type === 'node');
+      if (node) return node;
+    } catch {}
   }
+  return null;
 };
 
-const pageTarget = async () =>
-  (await targets(PORT)).find((t) => t.type === 'page' && t.url.endsWith('/app.html')) || null;
-
-const evaluate = (wsUrl, expression) =>
+const evaluate = (wsUrl, expression, timeoutMs) =>
   new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const timer = setTimeout(() => {
       ws.close();
       reject(new Error('timeout'));
-    }, 5000);
+    }, timeoutMs);
     ws.onopen = () =>
-      ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
+      ws.send(
+        JSON.stringify({
+          id: 1,
+          method: 'Runtime.evaluate',
+          params: { expression, awaitPromise: true, returnByValue: true },
+        }),
+      );
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.id !== 1) return;
       clearTimeout(timer);
       ws.close();
-      resolve(msg.result && msg.result.result ? msg.result.result.value : undefined);
+      const { result, exceptionDetails } = msg.result || {};
+      if (exceptionDetails) reject(new Error(exceptionDetails.exception?.description || exceptionDetails.text));
+      else resolve(result ? result.value : undefined);
     };
     ws.onerror = () => {
       clearTimeout(timer);
@@ -82,75 +99,98 @@ const evaluate = (wsUrl, expression) =>
     };
   });
 
-// Evaluated in Qobuz's main process. Unregistering the media keys hands Now
-// Playing commands back to Chromium, which routes them to the bridge. The
-// inspector is closed after the watcher disconnects (close() waits for clients).
+// Evaluated in Qobuz's main process. Replaces an older host, then injects the
+// bridge into the app page now and after every load, retrying until the page's
+// store exists. Once the bridge handles commands, unregistering the media keys
+// hands Now Playing commands back to Chromium, which routes them to the bridge;
+// a broken bridge leaves Qobuz's own media keys alone. Resolves with the first
+// injection result, or after 20 s, then closes the inspector (close() waits
+// for the watcher to disconnect).
 // With Accessibility access, Chromium also keeps an event tap that grabs the
 // hardware media keys before macOS routes them to the Now Playing app, so they
 // always control Qobuz. Nothing here can remove that tap; the user has to take
 // Qobuz out of the Accessibility list, so report it.
-const RELEASE_MEDIA_KEYS = `(() => {
-  const { globalShortcut, systemPreferences } = process.mainModule.require('electron');
-  for (const key of ['MediaPlayPause', 'MediaNextTrack', 'MediaPreviousTrack']) globalShortcut.unregister(key);
+const hostScript = (bridge) => `(async () => {
+  const { app, webContents, globalShortcut, systemPreferences } = process.mainModule.require('electron');
+  const BRIDGE = ${JSON.stringify(bridge)};
+  if (global.__qobuzNowPlayingHost) global.__qobuzNowPlayingHost.dispose();
+
+  let disposed = false;
+  let report;
+  const firstResult = new Promise((resolve) => (report = resolve));
+  const loads = new WeakMap();
+  const inject = async (wc) => {
+    if (!wc.getURL().endsWith('/app.html')) return;
+    const load = (loads.get(wc) || 0) + 1;
+    loads.set(wc, load);
+    while (!disposed && !wc.isDestroyed() && loads.get(wc) === load) {
+      const result = await wc.executeJavaScript(BRIDGE).catch((e) => 'error: ' + e.message);
+      if (result !== 'store not ready') {
+        if (['installed', 'updated', 'already installed'].includes(result))
+          for (const key of ['MediaPlayPause', 'MediaNextTrack', 'MediaPreviousTrack']) globalShortcut.unregister(key);
+        report(result);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  };
+
+  const hooked = new Map();
+  const hook = (wc) => {
+    if (hooked.has(wc)) return;
+    const onLoad = () => inject(wc);
+    wc.on('did-finish-load', onLoad);
+    hooked.set(wc, onLoad);
+    if (!wc.isLoading()) inject(wc);
+  };
+  const onCreated = (_event, wc) => hook(wc);
+  app.on('web-contents-created', onCreated);
+  webContents.getAllWebContents().forEach(hook);
+  global.__qobuzNowPlayingHost = {
+    dispose() {
+      disposed = true;
+      app.off('web-contents-created', onCreated);
+      for (const [wc, onLoad] of hooked) if (!wc.isDestroyed()) wc.off('did-finish-load', onLoad);
+    },
+  };
+
+  const result = await Promise.race([firstResult, new Promise((r) => setTimeout(() => r('waiting for the Qobuz page'), 20000))]);
   setTimeout(() => process.mainModule.require('inspector').close(), 1000);
   return systemPreferences.isTrustedAccessibilityClient(false)
-    ? 'released, but Qobuz has Accessibility access, so the keyboard media keys always control Qobuz. '
+    ? result + '. Qobuz has Accessibility access, so the keyboard media keys always control Qobuz. '
       + 'Remove Qobuz in System Settings > Privacy & Security > Accessibility, then restart Qobuz'
-    : 'released';
+    : result;
 })()`;
 
-const releaseMediaKeys = async () => {
-  const node = (await targets(INSPECT_PORT)).find((t) => t.type === 'node');
-  if (!node) return;
-  log(`media keys: ${await evaluate(node.webSocketDebuggerUrl, RELEASE_MEDIA_KEYS)}`);
-};
-
-const relaunch = async () => {
-  log('relaunching Qobuz with debug port');
-  await run('/usr/bin/osascript', ['-e', 'quit app "Qobuz"']).catch(() => {});
-  for (let i = 0; i < 40 && (await qobuzUptime()) !== null; i++) await new Promise((r) => setTimeout(r, 250));
-  await run('/usr/bin/open', [
-    '-a',
-    'Qobuz',
-    '--args',
-    `--remote-debugging-port=${PORT}`,
-    '--remote-debugging-address=127.0.0.1',
-    `--inspect=127.0.0.1:${INSPECT_PORT}`,
-  ]);
-};
-
-let relaunchedAt = 0;
+// The Qobuz process and bridge version the host was installed for, and the
+// failed attempts for the current process.
+let done = { pid: null, version: null };
+let attempts = { pid: null, count: 0 };
 
 const tick = async () => {
-  const uptime = await qobuzUptime();
-  if (uptime === null) return;
+  const qobuz = await qobuzProcess();
+  if (!qobuz || qobuz.uptime < MIN_UPTIME_S) return;
 
-  const target = await pageTarget();
-  if (!target) {
-    // Qobuz runs without the port. Relaunch only right after startup, and not in a loop.
-    if (uptime <= START_WINDOW_S && Date.now() - relaunchedAt > 60000) {
-      relaunchedAt = Date.now();
-      await relaunch();
-    }
-    return;
-  }
+  const bridge = readFileSync(join(DIR, 'bridge.js'), 'utf8');
+  const version = Number((bridge.match(/const VERSION = (\d+);/) || [])[1]);
+  if (done.pid === qobuz.pid && done.version === version) return;
+
+  if (attempts.pid !== qobuz.pid) attempts = { pid: qobuz.pid, count: 0 };
+  if (attempts.count >= MAX_ATTEMPTS) return;
+  attempts.count++;
 
   try {
-    const bridge = readFileSync(join(DIR, 'bridge.js'), 'utf8');
-    const version = Number((bridge.match(/const VERSION = (\d+);/) || [])[1]);
-    const installed = await evaluate(
-      target.webSocketDebuggerUrl,
-      `(window.__qobuzNowPlaying || {}).version === ${version}`,
-    );
-    if (!installed) {
-      const result = await evaluate(target.webSocketDebuggerUrl, bridge);
-      if (result !== 'store not ready') log(`bridge: ${result}`);
-      if (result !== 'installed' && result !== 'updated') return;
+    process.kill(qobuz.pid, 'SIGUSR1');
+    let target = null;
+    for (let i = 0; i < 12 && !target; i++) {
+      await sleep(250);
+      target = await inspectorTarget(qobuz.pid);
     }
-    // Only once the bridge handles commands, so a broken bridge leaves Qobuz's own media keys alone.
-    await releaseMediaKeys();
+    if (!target) throw new Error('Qobuz did not open its inspector');
+    log(`bridge: ${await evaluate(target.webSocketDebuggerUrl, hostScript(bridge), 30000)}`);
+    done = { pid: qobuz.pid, version };
   } catch (err) {
-    log(`inject error: ${err.message}`);
+    log(`inject error: ${err.message}${attempts.count >= MAX_ATTEMPTS ? '; giving up until Qobuz restarts' : ''}`);
   }
 };
 

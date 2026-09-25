@@ -13,10 +13,10 @@ The Qobuz Mac app is built on Electron, but it plays audio through its own nativ
 ## How it works
 
 1. **`watcher.mjs`** runs in the background as a per-user LaunchAgent.
-   - When you open Qobuz normally, the watcher restarts it once with `--remote-debugging-port=9333 --remote-debugging-address=127.0.0.1 --inspect=127.0.0.1:9334`.
-   - It only does this within the first 30 seconds after launch, so it never interrupts music that's already playing.
-   - It then injects the bridge into the Qobuz window, and injects it again after reloads and updates.
-   - Once the bridge is in, it uses the Node inspector on port 9334 to unregister Qobuz's media-key shortcuts in the main process, then closes that port. Now Playing commands then reach the bridge instead.
+   - It never restarts Qobuz. When Qobuz is running, the watcher sends its main process `SIGUSR1`, which makes Node open its inspector on `127.0.0.1` (port 9229 by default). It does this once per Qobuz launch, and again when `bridge.js` changes.
+   - Through the inspector, it installs a small hook in the main process. The hook injects the bridge into the Qobuz window, and injects it again after every reload.
+   - Once the bridge is in, the hook unregisters Qobuz's media-key shortcuts. Now Playing commands then reach the bridge instead.
+   - The watcher then closes the inspector, so no debug port stays open.
    - It logs a warning if Qobuz still has Accessibility access. See [Media keys and Accessibility access](#media-keys-and-accessibility-access).
 2. **`bridge.js`** runs inside the Qobuz page.
    - It reads the player state from the app's Redux store: current track, play state, position, and track/album metadata.
@@ -52,7 +52,7 @@ cd qobuz-now-playing
    ```
 
    When Qobuz asks for the access again on launch, tick the option to not ask again and decline.
-2. Quit Qobuz and open it again. It closes and reopens by itself once. Let it do that; if you reopen it yourself in between, it starts without the bridge. From then on the current track shows in Now Playing, and the media keys control Qobuz whenever it's the app that played last.
+2. If you removed the access while Qobuz was open, quit Qobuz and open it again. Otherwise there's nothing to restart: the watcher picks up a running Qobuz within a few seconds. From then on the current track shows in Now Playing, and the media keys control Qobuz whenever it's the app that played last.
 
 `install.sh` copies `src/` to `~/.qobuz-nowplaying/` and registers `~/Library/LaunchAgents/com.user.qobuz-nowplaying.plist`. Re-run it to update. If your node comes from a version manager (nvm, fnm, volta), re-run it whenever that path changes, or install bun.
 
@@ -72,7 +72,7 @@ When Qobuz is the app that played last, the keys control it. If nothing has play
 ./uninstall.sh
 ```
 
-Then quit and reopen Qobuz so it runs without the debug port. Qobuz's own media-key shortcuts need Accessibility access, so grant it again if you want them back.
+Then quit and reopen Qobuz to remove the bridge from the running app. Qobuz's own media-key shortcuts need Accessibility access, so grant it again if you want them back.
 
 ## Troubleshooting
 
@@ -80,7 +80,7 @@ Then quit and reopen Qobuz so it runs without the debug port. Qobuz's own media-
 # Watcher running?
 launchctl print gui/$(id -u)/com.user.qobuz-nowplaying | grep -E 'state|pid'
 
-# What has it done? A healthy run logs: watcher started / relaunching Qobuz with debug port / bridge: installed / media keys: released
+# What has it done? A healthy run logs: watcher started / bridge: installed
 tail -20 ~/.qobuz-nowplaying/watcher.log ~/.qobuz-nowplaying/watcher.err.log
 
 # What does macOS report as Now Playing?
@@ -92,14 +92,14 @@ bun tools/cdp.mjs 'JSON.stringify({bridge: !!window.__qobuzNowPlaying, state: na
 
 | Symptom | Fix |
 |---|---|
-| Qobuz was already open when you installed | Quit Qobuz and open it again. The watcher only restarts it right after launch. |
-| No `relaunching` line in the log | `launchctl kickstart -k gui/$(id -u)/com.user.qobuz-nowplaying` |
+| No `bridge:` line in the log | `launchctl kickstart -k gui/$(id -u)/com.user.qobuz-nowplaying` |
+| `inject error: Qobuz did not open its inspector` | Another process may be using port 9229. Check with `lsof -nP -iTCP:9229`, stop it, then quit and reopen Qobuz. |
+| `bridge: waiting for the Qobuz page` | Qobuz hadn't finished loading. The hook keeps trying inside Qobuz; check the page with `tools/cdp.mjs` (below). |
 | `inject error`, or `bridge: installed` never appears | A Qobuz update probably changed its internals. See below. |
-| Buttons work but the progress bar can't seek | Qobuz was started without `--inspect` (for example, before this version was installed), so `media keys: released` is missing from the log. Quit and reopen Qobuz. |
+| Buttons work but the progress bar can't seek | Qobuz's media-key shortcuts weren't released. Quit and reopen Qobuz, and check that `bridge: installed` appears in the log. |
 | Track shows but the buttons do nothing | The player button class names changed. Update the `.player__action-*` selectors in `src/bridge.js`. |
-| The keyboard's media keys control Qobuz while another app plays | Qobuz has Accessibility access; the log says so after `media keys: released`. Remove it (see [Install](#install), step 1) and restart Qobuz. |
+| The keyboard's media keys control Qobuz while another app plays | Qobuz has Accessibility access; the log says so on the `bridge:` line. Remove it (see [Install](#install), step 1) and restart Qobuz. |
 | Play/pause opens Apple Music | No app is in Now Playing. Play a track in Qobuz once so macOS registers it. If that doesn't help, check that the bridge is in (below). |
-| `relaunching` in the log, but no `bridge: installed` after it | Qobuz was reopened before the watcher's own relaunch, so it runs without the debug port. Quit Qobuz, open it again, and let it close and reopen by itself. |
 | Another app appears while Qobuz is paused | Normal. macOS shows the app that played most recently. |
 
 ### After a Qobuz update
@@ -121,12 +121,11 @@ Use `tools/cdp.mjs` to explore the live page, fix `src/bridge.js`, bump its `VER
 
 ## Security
 
-While Qobuz runs through this tool, it listens on a Chrome DevTools port bound to `127.0.0.1`. Chromium rejects WebSocket connections that come from websites, so a webpage can't reach it. Any local process running as your user can, and it could control the Qobuz page. Such a process can already read Qobuz's data in `~/Library/Application Support/Qobuz`, so the extra risk is small, but it isn't zero. Uninstall and restart Qobuz to close the port.
-
-After launch, Qobuz's main process also listens on a Node inspector port bound to `127.0.0.1:9334`. The watcher closes it once the bridge is installed and the media keys are released, normally within seconds. If the bridge never installs, the port stays open until Qobuz quits. The Node inspector rejects requests whose `Host` header isn't an IP address or `localhost`, so a website can't reach it. A local process running as your user could run code in Qobuz while the port is open, which it could already do as that user.
+Qobuz keeps no debug port open. Each time the watcher installs or updates the bridge, Qobuz's main process listens on a Node inspector port on `127.0.0.1` (9229 by default) for a few seconds, at most about 20 s while the page loads, and the watcher then closes it. The Node inspector rejects requests whose `Host` header isn't an IP address or `localhost`, so a website can't reach it. A local process running as your user could run code in Qobuz while the port is open. It could already do that by sending Qobuz `SIGUSR1` itself, and it can read Qobuz's data in `~/Library/Application Support/Qobuz`.
 
 ## Approaches that don't work
 
+- **Restarting Qobuz with `--remote-debugging-port` and `--inspect`:** this is what earlier versions did. The window visibly closes and reopens, and a Qobuz that was already running (for example, opened at login) was left without the bridge.
 - **`NODE_OPTIONS=--require …`** (hooking the main process with no debug port): Electron refuses it on macOS with `Node.js environment variables are disabled because this process is invoked by other apps.`
 - **Patching `main-darwin.js` inside the bundle:** this breaks the code signature, and the updater overwrites it anyway.
 - **Calling the app's IPC from the page:** the page has no `require` or `ipcRenderer` access.
