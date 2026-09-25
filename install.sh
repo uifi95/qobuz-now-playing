@@ -60,5 +60,7 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
 echo "Installed. Runtime: $RUNTIME"
-echo "Quit Qobuz and open it again; it will restart itself once."
+echo "Remove Qobuz from System Settings > Privacy & Security > Accessibility, or media keys"
+echo "always control Qobuz: tccutil reset Accessibility com.qobuz.desktop"
+echo "Then quit Qobuz and open it again; it will restart itself once."
 echo "Log: $INSTALL_DIR/watcher.log"
