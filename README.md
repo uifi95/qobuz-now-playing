@@ -8,7 +8,7 @@ It doesn't modify the Qobuz app bundle. It keeps working across Qobuz updates as
 
 ## Why this is needed
 
-The Qobuz Mac app is built on Electron, but it plays audio through its own native engine (JUCE) rather than through Chromium. macOS learns what's playing from Chromium's media session, and that session only exists when a page plays an `<audio>`/`<video>` element. Qobuz never plays one, so macOS never hears about the track. The app registers the media keys as global shortcuts and does nothing else. On macOS, Electron implements those shortcuts through the same remote command center Now Playing uses, and turns off Chromium's own handling while they are registered, so a page's media session never receives remote commands such as seeking.
+The Qobuz Mac app is built on Electron, but it plays audio through its own native engine (JUCE) rather than through Chromium. macOS learns what's playing from Chromium's media session, and that session only exists when a page plays an `<audio>`/`<video>` element. Qobuz never plays one, so macOS never hears about the track. The app registers the media keys as global shortcuts and does nothing else. On macOS, Electron implements those shortcuts through the same remote command center Now Playing uses, and turns off Chromium's own handling while they are registered, so a page's media session never receives remote commands such as seeking. If Qobuz also has Accessibility access, which it asks for on launch, Chromium grabs the keyboard's media keys before macOS can send them to the app that's playing, so they always control Qobuz. See [Media keys and Accessibility access](#media-keys-and-accessibility-access).
 
 ## How it works
 
@@ -17,6 +17,7 @@ The Qobuz Mac app is built on Electron, but it plays audio through its own nativ
    - It only does this within the first 30 seconds after launch, so it never interrupts music that's already playing.
    - It then injects the bridge into the Qobuz window, and injects it again after reloads and updates.
    - Once the bridge is in, it uses the Node inspector on port 9334 to unregister Qobuz's media-key shortcuts in the main process, then closes that port. Now Playing commands then reach the bridge instead.
+   - It logs a warning if Qobuz still has Accessibility access. See [Media keys and Accessibility access](#media-keys-and-accessibility-access).
 2. **`bridge.js`** runs inside the Qobuz page.
    - It reads the player state from the app's Redux store: current track, play state, position, and track/album metadata.
    - It copies that state into `navigator.mediaSession`.
@@ -38,9 +39,32 @@ cd qobuz-now-playing
 ./install.sh
 ```
 
-Then quit Qobuz and open it again. It closes and reopens by itself once, and from then on the current track shows in Now Playing.
+1. Remove Qobuz's Accessibility access, so the keyboard's media keys control whatever is playing instead of always Qobuz. Open **System Settings → Privacy & Security → Accessibility**, select **Qobuz** and click **−**. This opens that list directly:
+
+   ```sh
+   open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"
+   ```
+
+   Or remove the entry from a terminal:
+
+   ```sh
+   tccutil reset Accessibility com.qobuz.desktop
+   ```
+
+   When Qobuz asks for the access again on launch, tick the option to not ask again and decline.
+2. Quit Qobuz and open it again. It closes and reopens by itself once. Let it do that; if you reopen it yourself in between, it starts without the bridge. From then on the current track shows in Now Playing, and the media keys control Qobuz whenever it's the app that played last.
 
 `install.sh` copies `src/` to `~/.qobuz-nowplaying/` and registers `~/Library/LaunchAgents/com.user.qobuz-nowplaying.plist`. Re-run it to update. If your node comes from a version manager (nvm, fnm, volta), re-run it whenever that path changes, or install bun.
+
+## Media keys and Accessibility access
+
+Qobuz asks for Accessibility access so its media-key shortcuts work. This tool doesn't need it, and leaving it on breaks the media keys for every other app.
+
+Electron (Chromium) watches the keyboard's play/pause, next and previous keys with an event tap. macOS lets that tap intercept keys only when the app has Accessibility access. With access, the keys reach Qobuz before macOS can send them to the Now Playing app, so they control Qobuz even while a browser or another player is playing. Unregistering Qobuz's shortcuts doesn't remove the tap, and nothing outside Qobuz can remove it while the access is granted.
+
+Without Accessibility access there's no tap, and the keys behave as they do for other apps: macOS sends them to the Now Playing app, and Qobuz receives them through its media session when it's that app. Control Center and the lock screen always go through Now Playing, so they work either way.
+
+When Qobuz is the app that played last, the keys control it. If nothing has played since you logged in, macOS opens Apple Music when you press play/pause. That's also standard macOS behavior.
 
 ## Uninstall
 
@@ -48,7 +72,7 @@ Then quit Qobuz and open it again. It closes and reopens by itself once, and fro
 ./uninstall.sh
 ```
 
-Then quit and reopen Qobuz so it runs without the debug port.
+Then quit and reopen Qobuz so it runs without the debug port. Qobuz's own media-key shortcuts need Accessibility access, so grant it again if you want them back.
 
 ## Troubleshooting
 
@@ -73,6 +97,9 @@ bun tools/cdp.mjs 'JSON.stringify({bridge: !!window.__qobuzNowPlaying, state: na
 | `inject error`, or `bridge: installed` never appears | A Qobuz update probably changed its internals. See below. |
 | Buttons work but the progress bar can't seek | Qobuz was started without `--inspect` (for example, before this version was installed), so `media keys: released` is missing from the log. Quit and reopen Qobuz. |
 | Track shows but the buttons do nothing | The player button class names changed. Update the `.player__action-*` selectors in `src/bridge.js`. |
+| The keyboard's media keys control Qobuz while another app plays | Qobuz has Accessibility access; the log says so after `media keys: released`. Remove it (see [Install](#install), step 1) and restart Qobuz. |
+| Play/pause opens Apple Music | No app is in Now Playing. Play a track in Qobuz once so macOS registers it. If that doesn't help, check that the bridge is in (below). |
+| `relaunching` in the log, but no `bridge: installed` after it | Qobuz was reopened before the watcher's own relaunch, so it runs without the debug port. Quit Qobuz, open it again, and let it close and reopen by itself. |
 | Another app appears while Qobuz is paused | Normal. macOS shows the app that played most recently. |
 
 ### After a Qobuz update

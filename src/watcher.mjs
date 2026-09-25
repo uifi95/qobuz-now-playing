@@ -8,7 +8,8 @@
 //   one-shot Node inspector on the main process, then close the inspector.
 //   Electron's media-key globalShortcuts swallow every macOS Now Playing
 //   command, so without this Control Center can't seek and the bridge's
-//   handlers never run.
+//   handlers never run. Warns if Qobuz has Accessibility access, which lets
+//   Chromium grab the keyboard media keys from whatever else is playing.
 // Runs on bun or node >= 22 (needs global fetch and WebSocket).
 import { execFile } from 'node:child_process';
 import { readFileSync, appendFileSync } from 'node:fs';
@@ -84,11 +85,18 @@ const evaluate = (wsUrl, expression) =>
 // Evaluated in Qobuz's main process. Unregistering the media keys hands Now
 // Playing commands back to Chromium, which routes them to the bridge. The
 // inspector is closed after the watcher disconnects (close() waits for clients).
+// With Accessibility access, Chromium also keeps an event tap that grabs the
+// hardware media keys before macOS routes them to the Now Playing app, so they
+// always control Qobuz. Nothing here can remove that tap; the user has to take
+// Qobuz out of the Accessibility list, so report it.
 const RELEASE_MEDIA_KEYS = `(() => {
-  const { globalShortcut } = process.mainModule.require('electron');
+  const { globalShortcut, systemPreferences } = process.mainModule.require('electron');
   for (const key of ['MediaPlayPause', 'MediaNextTrack', 'MediaPreviousTrack']) globalShortcut.unregister(key);
   setTimeout(() => process.mainModule.require('inspector').close(), 1000);
-  return 'released';
+  return systemPreferences.isTrustedAccessibilityClient(false)
+    ? 'released, but Qobuz has Accessibility access, so the keyboard media keys always control Qobuz. '
+      + 'Remove Qobuz in System Settings > Privacy & Security > Accessibility, then restart Qobuz'
+    : 'released';
 })()`;
 
 const releaseMediaKeys = async () => {
