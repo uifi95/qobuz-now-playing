@@ -5,9 +5,13 @@
 // navigator.mediaSession and keeps a silent looping <audio> element alive so
 // Chromium publishes it to Control Center / lock screen / media keys.
 (() => {
-  if (window.__qobuzNowPlaying) return 'already installed';
+  // Bump when changing this file so the watcher replaces an older injected copy.
+  const VERSION = 2;
+  const previous = window.__qobuzNowPlaying;
+  if (previous && previous.version === VERSION) return 'already installed';
 
-  const findStore = () => {
+  // Depth-first search of the React fiber tree for a component prop.
+  const findProp = (name, test) => {
     for (const el of document.querySelectorAll('body, body > *, #root, #app')) {
       const key = Object.keys(el).find((k) => k.startsWith('__reactContainer'));
       if (!key) continue;
@@ -16,8 +20,8 @@
       while (stack.length && visited++ < 20000) {
         const node = stack.pop();
         if (!node) continue;
-        const store = node.memoizedProps && node.memoizedProps.store;
-        if (store && typeof store.getState === 'function') return store;
+        const value = node.memoizedProps && node.memoizedProps[name];
+        if (value && test(value)) return value;
         if (node.sibling) stack.push(node.sibling);
         if (node.child) stack.push(node.child);
       }
@@ -25,8 +29,16 @@
     return null;
   };
 
-  const store = findStore();
+  const store = findProp('store', (s) => typeof s.getState === 'function');
   if (!store) return 'store not ready';
+
+  if (previous) {
+    if (previous.unsubscribe) previous.unsubscribe();
+    if (previous.audio) {
+      previous.audio.pause();
+      previous.audio.remove();
+    }
+  }
 
   // 10s of 8 kHz mono 8-bit silence. Chromium ignores media shorter than 5s.
   const silentWavUrl = (() => {
@@ -59,6 +71,11 @@
   ms.setActionHandler('pause', () => { if (isPlaying()) click('.player__action-pause, .player__action-play'); });
   ms.setActionHandler('previoustrack', () => click('.player__action-previous'));
   ms.setActionHandler('nexttrack', () => click('.player__action-next'));
+  // The progress bar receives Qobuz's setCurrentTrackPosition action as `seek`.
+  ms.setActionHandler('seekto', (details) => {
+    const seek = findProp('seek', (f) => typeof f === 'function');
+    if (seek && details.seekTime != null) seek({ position: Math.round(details.seekTime * 1000) });
+  });
 
   let lastTrackId = null;
   let lastPlaying = null;
@@ -124,6 +141,6 @@
 
   const unsubscribe = store.subscribe(sync);
   sync();
-  window.__qobuzNowPlaying = { unsubscribe, audio, sync };
-  return 'installed';
+  window.__qobuzNowPlaying = { version: VERSION, unsubscribe, audio, sync };
+  return previous ? 'updated' : 'installed';
 })();
