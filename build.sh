@@ -58,7 +58,7 @@ for ARCH in arm64 x64; do
   PKG="qobuz-now-playing-$VERSION"
   mkdir -p "dist/$PKG"
   compile "$ARCH" "dist/$PKG/qobuz-now-playing" "$VERSION"
-  cp install.sh uninstall.sh README.md LICENSE "dist/$PKG/"
+  cp -R install.sh uninstall.sh README.md LICENSE docs "dist/$PKG/"
   tar -C dist -czf "dist/$PKG-macos-$ARCH.tar.gz" "$PKG"
   app "$ARCH" "dist/$PKG/qobuz-now-playing" "$VERSION" "dist/$APP_NAME.app"
   # ditto keeps the signature intact, which zip doesn't guarantee.
