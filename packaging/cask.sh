@@ -40,9 +40,19 @@ cask "qobuz-now-playing" do
   }
 
   caveats <<~EOS
-    So the keyboard's media keys control whatever is playing, not always
-    Qobuz, remove Qobuz's Accessibility access, then quit and reopen Qobuz:
+    Qobuz Now Playing is running, and starts again at every login.
+
+    One more step, so the keyboard's media keys control whatever is playing
+    instead of always Qobuz: remove Qobuz's Accessibility access, then quit
+    and reopen Qobuz:
       tccutil reset Accessibility com.qobuz.desktop
+      osascript -e 'quit app "Qobuz"'; sleep 3; open -a Qobuz
+    When Qobuz asks for Accessibility access again, tick the option to
+    not ask again and decline.
+
+    To check it works, open Qobuz. A log line like "bridge: installed"
+    means it's connected:
+      tail ~/.qobuz-nowplaying/watcher.log
   EOS
 end
 RUBY

@@ -11,7 +11,8 @@
 // Warns if Qobuz has Accessibility access, which lets Chromium grab the
 // keyboard media keys from whatever else is playing.
 // Runs on bun; build.sh compiles it, with bridge.js embedded, into a single
-// executable. Logs go to stdout; the LaunchAgent decides where they're written.
+// executable, which the LaunchAgent (install.sh) or the Mac app (app/) runs.
+// Logs go to stdout; whoever runs it decides where they're written.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import BRIDGE from './bridge.js' with { type: 'text' };
@@ -196,8 +197,12 @@ const tick = async () => {
   }
 };
 
+// Started by the Mac app: exit if the app goes away without stopping us.
+const PARENT = process.env.QOBUZ_NOW_PLAYING_APP ? process.ppid : null;
+
 log(`watcher ${VERSION} started (bridge v${BRIDGE_VERSION})`);
 const loop = async () => {
+  if (PARENT && process.ppid !== PARENT) process.exit(0);
   await tick().catch((err) => log(`tick error: ${err.message}`));
   setTimeout(loop, POLL_MS);
 };

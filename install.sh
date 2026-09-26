@@ -64,8 +64,14 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
-echo "Installed qobuz-now-playing $("$INSTALL_DIR/qobuz-now-playing" --version)."
-echo "Remove Qobuz from System Settings > Privacy & Security > Accessibility, or media keys"
-echo "always control Qobuz: tccutil reset Accessibility com.qobuz.desktop"
+echo "Installed qobuz-now-playing $("$INSTALL_DIR/qobuz-now-playing" --version). It starts at every login."
 echo "If Qobuz is open, the bridge is injected within a few seconds; no restart needed."
-echo "Log: $INSTALL_DIR/watcher.log"
+echo
+echo "One more step, so the keyboard's media keys control whatever is playing instead of"
+echo "always Qobuz: remove Qobuz's Accessibility access, then quit and reopen Qobuz:"
+echo "  tccutil reset Accessibility com.qobuz.desktop"
+echo "  osascript -e 'quit app \"Qobuz\"'; sleep 3; open -a Qobuz"
+echo "When Qobuz asks for Accessibility access again, tick the option to not ask again and decline."
+echo
+echo "To check it works, open Qobuz. A log line like \"bridge: installed\" means it's connected:"
+echo "  tail $INSTALL_DIR/watcher.log"

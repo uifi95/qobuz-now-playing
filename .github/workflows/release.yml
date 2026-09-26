@@ -1,4 +1,4 @@
-# Push a tag like v1.2.0 to build the release tarballs, publish them as a
+# Push a tag like v1.2.0 to build the release tarballs and Mac app zips, publish them as a
 # GitHub release, and update the Homebrew cask in uifi95/homebrew-tap.
 # Updating the tap needs a HOMEBREW_TAP_TOKEN secret: a fine-grained token with
 # Contents read/write on uifi95/homebrew-tap. Without it, copy the
@@ -26,7 +26,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.tar.gz dist/qobuz-now-playing.rb
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.tar.gz dist/*.zip dist/qobuz-now-playing.rb
       - name: Update Homebrew cask
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
