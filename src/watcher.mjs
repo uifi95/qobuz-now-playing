@@ -1,6 +1,7 @@
 // Keeps the Qobuz -> macOS Now Playing bridge alive, without restarting Qobuz.
-// - For each Qobuz launch, and whenever bridge.js changes, send SIGUSR1 to the
-//   Qobuz main process. Node opens its inspector on 127.0.0.1 in response.
+// - For each Qobuz launch, and once when the watcher starts (so an update
+//   replaces the running bridge), send SIGUSR1 to the Qobuz main process.
+//   Node opens its inspector on 127.0.0.1 in response.
 // - Through the inspector, install a small host in the main process that
 //   injects the bridge into the Qobuz page, again after every reload, then
 //   releases Qobuz's media-key shortcuts. Electron's media-key globalShortcuts
@@ -9,26 +10,27 @@
 // - Close the inspector again, so no debug port stays open.
 // Warns if Qobuz has Accessibility access, which lets Chromium grab the
 // keyboard media keys from whatever else is playing.
-// Runs on bun or node >= 22 (needs global fetch and WebSocket).
+// Runs on bun; build.sh compiles it, with bridge.js embedded, into a single
+// executable. Logs go to stdout; the LaunchAgent decides where they're written.
 import { execFile } from 'node:child_process';
-import { readFileSync, appendFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import BRIDGE from './bridge.js' with { type: 'text' };
+
+// build.sh sets the release version; a plain `bun src/watcher.mjs` reports "dev".
+const VERSION = process.env.QOBUZ_NOW_PLAYING_VERSION || 'dev';
+if (process.argv.includes('--version')) {
+  console.log(VERSION);
+  process.exit(0);
+}
 
 const run = promisify(execFile);
-const DIR = dirname(fileURLToPath(import.meta.url));
 const POLL_MS = 3000;
 // Node installs its SIGUSR1 handler early in startup; before that the signal
 // would terminate Qobuz, so leave a just-started process alone for a moment.
 const MIN_UPTIME_S = 3;
 const MAX_ATTEMPTS = 5;
 
-const log = (msg) => {
-  try {
-    appendFileSync(join(DIR, 'watcher.log'), `${new Date().toISOString()} ${msg}\n`);
-  } catch {}
-};
+const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -162,18 +164,18 @@ const hostScript = (bridge) => `(async () => {
     : result;
 })()`;
 
-// The Qobuz process and bridge version the host was installed for, and the
-// failed attempts for the current process.
-let done = { pid: null, version: null };
+const BRIDGE_VERSION = Number((BRIDGE.match(/const VERSION = (\d+);/) || [])[1]);
+
+// The Qobuz process the host was installed for, and the failed attempts for
+// the current process.
+let donePid = null;
 let attempts = { pid: null, count: 0 };
 
 const tick = async () => {
   const qobuz = await qobuzProcess();
   if (!qobuz || qobuz.uptime < MIN_UPTIME_S) return;
 
-  const bridge = readFileSync(join(DIR, 'bridge.js'), 'utf8');
-  const version = Number((bridge.match(/const VERSION = (\d+);/) || [])[1]);
-  if (done.pid === qobuz.pid && done.version === version) return;
+  if (donePid === qobuz.pid) return;
 
   if (attempts.pid !== qobuz.pid) attempts = { pid: qobuz.pid, count: 0 };
   if (attempts.count >= MAX_ATTEMPTS) return;
@@ -187,14 +189,14 @@ const tick = async () => {
       target = await inspectorTarget(qobuz.pid);
     }
     if (!target) throw new Error('Qobuz did not open its inspector');
-    log(`bridge: ${await evaluate(target.webSocketDebuggerUrl, hostScript(bridge), 30000)}`);
-    done = { pid: qobuz.pid, version };
+    log(`bridge: ${await evaluate(target.webSocketDebuggerUrl, hostScript(BRIDGE), 30000)}`);
+    donePid = qobuz.pid;
   } catch (err) {
     log(`inject error: ${err.message}${attempts.count >= MAX_ATTEMPTS ? '; giving up until Qobuz restarts' : ''}`);
   }
 };
 
-log('watcher started');
+log(`watcher ${VERSION} started (bridge v${BRIDGE_VERSION})`);
 const loop = async () => {
   await tick().catch((err) => log(`tick error: ${err.message}`));
   setTimeout(loop, POLL_MS);

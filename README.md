@@ -12,8 +12,8 @@ The Qobuz Mac app is built on Electron, but it plays audio through its own nativ
 
 ## How it works
 
-1. **`watcher.mjs`** runs in the background as a per-user LaunchAgent.
-   - It never restarts Qobuz. When Qobuz is running, the watcher sends its main process `SIGUSR1`, which makes Node open its inspector on `127.0.0.1` (port 9229 by default). It does this once per Qobuz launch, and again when `bridge.js` changes.
+1. **`watcher.mjs`** runs in the background as a per-user LaunchAgent. It's compiled with `bridge.js` into a single `qobuz-now-playing` program, so it needs no bun or Node.js to run.
+   - It never restarts Qobuz. When Qobuz is running, the watcher sends its main process `SIGUSR1`, which makes Node open its inspector on `127.0.0.1` (port 9229 by default). It does this once per Qobuz launch, and again each time the watcher starts, so an update replaces the running bridge.
    - Through the inspector, it installs a small hook in the main process. The hook injects the bridge into the Qobuz window, and injects it again after every reload.
    - Once the bridge is in, the hook unregisters Qobuz's media-key shortcuts. Now Playing commands then reach the bridge instead.
    - The watcher then closes the inspector, so no debug port stays open.
@@ -26,18 +26,23 @@ The Qobuz Mac app is built on Electron, but it plays audio through its own nativ
 
 ## Requirements
 
-- macOS with the Qobuz desktop app in `/Applications`
-- [bun](https://bun.sh) (`brew install bun`) or Node.js 22 or newer
+- macOS 13 (Ventura) or newer, with the Qobuz desktop app in `/Applications`
 
 Tested with Qobuz 8.2.0 (Electron 32) on macOS 27.
 
 ## Install
 
+With [Homebrew](https://brew.sh), open Terminal and run:
+
 ```sh
-git clone https://github.com/uifi95/qobuz-now-playing.git
-cd qobuz-now-playing
-./install.sh
+brew install --cask uifi95/tap/qobuz-now-playing
 ```
+
+That's all it needs: it starts right away and at every login. Update it with `brew upgrade --cask qobuz-now-playing`.
+
+Without Homebrew, download the `.tar.gz` for your Mac from the [latest release](https://github.com/uifi95/qobuz-now-playing/releases/latest): `arm64` for Apple silicon (M1 and later), `x64` for Intel. Open it, then drag the `install.sh` file from the folder it creates into a Terminal window and press Return. Run a newer release's `install.sh` the same way to update.
+
+Then:
 
 1. Remove Qobuz's Accessibility access, so the keyboard's media keys control whatever is playing instead of always Qobuz. Open **System Settings → Privacy & Security → Accessibility**, select **Qobuz** and click **−**. This opens that list directly:
 
@@ -54,7 +59,17 @@ cd qobuz-now-playing
    When Qobuz asks for the access again on launch, tick the option to not ask again and decline.
 2. If you removed the access while Qobuz was open, quit Qobuz and open it again. Otherwise there's nothing to restart: the watcher picks up a running Qobuz within a few seconds. From then on the current track shows in Now Playing, and the media keys control Qobuz whenever it's the app that played last.
 
-`install.sh` copies `src/` to `~/.qobuz-nowplaying/` and registers `~/Library/LaunchAgents/com.user.qobuz-nowplaying.plist`. Re-run it to update. If your node comes from a version manager (nvm, fnm, volta), re-run it whenever that path changes, or install bun.
+`install.sh` copies the `qobuz-now-playing` program to `~/.qobuz-nowplaying/` and registers `~/Library/LaunchAgents/com.user.qobuz-nowplaying.plist`. The Homebrew cask runs the same script.
+
+### From source
+
+```sh
+git clone https://github.com/uifi95/qobuz-now-playing.git
+cd qobuz-now-playing
+./install.sh
+```
+
+This needs [bun](https://bun.sh) (`brew install bun`): `install.sh` runs `build.sh`, which compiles `src/watcher.mjs`, with `src/bridge.js` embedded, into `dist/qobuz-now-playing`. Re-run `./install.sh` after changing either file.
 
 ## Media keys and Accessibility access
 
@@ -68,9 +83,13 @@ When Qobuz is the app that played last, the keys control it. If nothing has play
 
 ## Uninstall
 
+If you installed with Homebrew:
+
 ```sh
-./uninstall.sh
+brew uninstall --cask qobuz-now-playing
 ```
+
+Otherwise run `uninstall.sh` from the release folder or checkout, the same way as `install.sh`.
 
 Then quit and reopen Qobuz to remove the bridge from the running app. Qobuz's own media-key shortcuts need Accessibility access, so grant it again if you want them back.
 
@@ -117,7 +136,11 @@ The bridge depends on these parts of Qobuz's internals:
 | A component prop `seek({position})` (ms) | Progress bar's seek action, called for `seekto` |
 | `globalShortcut` `MediaPlayPause`, `MediaNextTrack`, `MediaPreviousTrack` (main process) | Shortcuts released so Chromium routes commands to the page |
 
-Use `tools/cdp.mjs` to explore the live page, fix `src/bridge.js`, bump its `VERSION`, then re-run `./install.sh`. The watcher replaces the running bridge with the new version. Pull requests are welcome.
+Use `tools/cdp.mjs` to explore the live page, fix `src/bridge.js`, bump its `VERSION`, then re-run `./install.sh`. The restarted watcher replaces the running bridge with the new version. Pull requests are welcome.
+
+## Releasing
+
+Push a tag such as `v1.2.0`. The `release` workflow builds `qobuz-now-playing-<version>-macos-{arm64,x64}.tar.gz` with `./build.sh <version>`, publishes them as a GitHub release, and updates `Casks/qobuz-now-playing.rb` in [uifi95/homebrew-tap](https://github.com/uifi95/homebrew-tap) (see the workflow for the token it needs). `packaging/cask.sh` generates the cask.
 
 ## Security
 
