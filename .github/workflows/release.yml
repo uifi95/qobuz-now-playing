@@ -1,0 +1,43 @@
+# Push a tag like v1.2.0 to build the release tarballs, publish them as a
+# GitHub release, and update the Homebrew cask in uifi95/homebrew-tap.
+# Updating the tap needs a HOMEBREW_TAP_TOKEN secret: a fine-grained token with
+# Contents read/write on uifi95/homebrew-tap. Without it, copy the
+# qobuz-now-playing.rb attached to the release into the tap's Casks/ by hand.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Build
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ./build.sh "$VERSION"
+          packaging/cask.sh "$VERSION" > dist/qobuz-now-playing.rb
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.tar.gz dist/qobuz-now-playing.rb
+      - name: Update Homebrew cask
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        if: env.TAP_TOKEN != ''
+        run: |
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/uifi95/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          cp dist/qobuz-now-playing.rb tap/Casks/
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/qobuz-now-playing.rb
+          git commit -m "qobuz-now-playing ${GITHUB_REF_NAME#v}"
+          git push
