@@ -42,10 +42,12 @@ There are two ways to run it. Use one, not both:
 1. Download `Qobuz-Now-Playing-<version>-macos-arm64.zip` from the [latest release](https://github.com/uifi95/qobuz-now-playing/releases/latest), or `-x64.zip` for an Intel Mac. Not sure which? Apple menu → **About This Mac**: "Apple M…" means arm64, "Intel" means x64.
 2. Open the zip and drag **Qobuz Now Playing** into your **Applications** folder.
 3. Open it. The app isn't notarized by Apple (that needs a paid developer account), so macOS refuses the first time with "Apple could not verify…". Click **Done**, then open **System Settings → Privacy & Security**, scroll to "Qobuz Now Playing was blocked…" and click **Open Anyway**, then confirm. You only do this once.
-4. A ♪ icon appears in the menu bar. Click it to see whether it's working: it should say **Working: Qobuz shows in Now Playing** while Qobuz is open.
-5. If the icon turns into a ⚠ and the menu says **Media keys always control Qobuz**, click **Fix Media Keys…**. That removes Qobuz's Accessibility access and reopens Qobuz (see [why](#media-keys-and-accessibility-access)). When Qobuz asks for the access again, tick the option to not ask again and decline.
+4. The setup window opens. If it says **Turn off Qobuz in Accessibility**, click **Open Accessibility Settings**, switch off Qobuz in the list, then click **Reopen Qobuz**. When Qobuz asks for the access again, tick the option to not ask again and decline. The window turns green once Qobuz no longer has the access ([why this matters](#media-keys-and-accessibility-access)). Qobuz Now Playing itself doesn't need Accessibility access.
+5. A ♪ icon appears in the menu bar. Its menu says **Working: Qobuz shows in Now Playing** while Qobuz is open. It becomes ⚠ if something needs attention.
 
-The app turns on **Open at Login** the first time it runs, so it starts with your Mac; untick it in the menu to stop that. **Show Log** opens `~/Library/Logs/Qobuz Now Playing.log`. To update, replace the app with a newer one. To uninstall, quit it from its menu and move it to the Trash.
+The app turns on **Open at login** the first time it runs, so it starts with your Mac. The setup window also has **Show icon in the menu bar**. Untick it and the app keeps running without an icon. To get the window back, open Qobuz Now Playing again from Applications or Spotlight; with the icon showing, use its **Settings…** item. **Show Log** opens `~/Library/Logs/Qobuz Now Playing.log`. To update, quit the app and replace it with a newer one. To uninstall, quit it and move it to the Trash.
+
+If you had the background service installed (Homebrew or `install.sh`), the app offers to remove it the first time it opens, so only one copy runs. After a Homebrew install, also run `brew uninstall --cask qobuz-now-playing` so Homebrew stops tracking it.
 
 If you'd rather use Terminal for step 3: `xattr -dr com.apple.quarantine "/Applications/Qobuz Now Playing.app"`.
 
@@ -147,7 +149,7 @@ bun tools/cdp.mjs 'JSON.stringify({bridge: !!window.__qobuzNowPlaying, state: na
 | `inject error`, or `bridge: installed` never appears | A Qobuz update probably changed its internals. See below. |
 | Buttons work but the progress bar can't seek | Qobuz's media-key shortcuts weren't released. Quit and reopen Qobuz, and check that `bridge: installed` appears in the log. |
 | Track shows but the buttons do nothing | The player button class names changed. Update the `.player__action-*` selectors in `src/bridge.js`. |
-| The keyboard's media keys control Qobuz while another app plays | Qobuz has Accessibility access; the log says so on the `bridge:` line. Remove it (the Mac app's **Fix Media Keys…**, or [step 1 here](#after-installing-the-background-service)). |
+| The keyboard's media keys control Qobuz while another app plays | Qobuz has Accessibility access; the log says so on the `bridge:` line. Remove it (the Mac app's setup window, or [step 1 here](#after-installing-the-background-service)). |
 | Play/pause opens Apple Music | No app is in Now Playing. Play a track in Qobuz once so macOS registers it. If that doesn't help, check that the bridge is in (below). |
 | Another app appears while Qobuz is paused | Normal. macOS shows the app that played most recently. |
 
