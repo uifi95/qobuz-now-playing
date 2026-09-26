@@ -2,14 +2,16 @@
 # Prints the Homebrew cask for a release, for the uifi95/homebrew-tap repo
 # (Casks/qobuz-now-playing.rb). Run after ./build.sh <version>.
 # Usage: packaging/cask.sh <version> [url-base]
-#   url-base defaults to the GitHub release download URL for v<version>.
+#   url-base defaults to the GitHub release download URL, written with
+#   #{version} so the cask needs only its version and sha256 bumped.
 # A cask rather than a formula: formulae without bottles need up-to-date
 # Command Line Tools to install, even when there's nothing to compile.
 set -eu
 
 VERSION="$1"
 cd "$(dirname "$0")/.."
-BASE="${2:-https://github.com/uifi95/qobuz-now-playing/releases/download/v$VERSION}"
+RELEASES='https://github.com/uifi95/qobuz-now-playing/releases/download/v#{version}'
+BASE="${2:-$RELEASES}"
 sha() { shasum -a 256 "dist/qobuz-now-playing-$VERSION-macos-$1.tar.gz" | cut -d' ' -f1; }
 
 cat <<RUBY
