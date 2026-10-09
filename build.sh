@@ -1,6 +1,7 @@
 #!/bin/sh
-# Compiles the watcher, with bridge.js embedded, into one executable that
-# needs no bun or node.
+# Compiles the native addon (src/native/nowplaying.m) and the watcher, with
+# bridge.js and the addon embedded, into one executable that needs no bun or
+# node.
 # Also wraps it in the menu-bar app (app/), which needs swiftc (Xcode or its
 # Command Line Tools).
 #   ./build.sh            dist/qobuz-now-playing for this Mac, version "dev"
@@ -9,6 +10,9 @@
 #                         and Qobuz-Now-Playing-1.2.0-macos-{arm64,x64}.zip, and
 #                         prints the tarballs' SHA-256
 # Everything is per architecture: a universal binary would be twice the size.
+# The addon is the exception, since it's small and must match Qobuz, not the
+# watcher.
+# Needs clang (Xcode or its Command Line Tools) for the addon.
 set -eu
 
 VERSION="${1:-}"
@@ -16,6 +20,17 @@ cd "$(dirname "$0")"
 
 command -v bun >/dev/null || { echo "error: building needs bun (https://bun.sh)" >&2; exit 1; }
 APP_NAME="Qobuz Now Playing"
+
+# Node-API addon, loaded into the Qobuz main process. Its Objective-C class is
+# named after the source, so a Qobuz holding an older build can load a new one.
+native() {
+  CLASS="QNPQueueDataSource_$(shasum -a 256 src/native/nowplaying.m | cut -c1-12)"
+  clang -fobjc-arc -O2 -Wall -Wno-unused-parameter -bundle -undefined dynamic_lookup \
+    -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 -DQNP_CLASS="$CLASS" \
+    -framework Foundation -framework AppKit -framework CoreAudio -framework MediaPlayer \
+    src/native/nowplaying.m -o dist/nowplaying.node
+  codesign --force --sign - dist/nowplaying.node 2>/dev/null
+}
 
 # compile <arch> <outfile> <version>
 compile() {
@@ -42,6 +57,7 @@ app() {
 
 rm -rf dist
 mkdir -p dist
+native
 
 if [ -z "$VERSION" ] || [ "$VERSION" = app ]; then
   case "$(uname -m)" in arm64) ARCH=arm64 ;; *) ARCH=x64 ;; esac

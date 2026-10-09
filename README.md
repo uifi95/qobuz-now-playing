@@ -1,8 +1,8 @@
 # qobuz-now-playing
 
-Makes the Qobuz desktop app for macOS show up in **Now Playing**: Control Center, the lock screen and the menu bar get the current track, artist, album, artwork and progress, and their play/pause/next/previous buttons and progress bar control Qobuz.
+Makes the Qobuz desktop app for macOS show up in **Now Playing**, like Apple Music does: Control Center, the lock screen, the menu bar and apps that read Now Playing (such as Vorssaint) get the current track with its artwork, album, genre and progress, the Up Next queue, the audio output and the stream's format. Play/pause, next/previous, seeking, ±15 s skips, holding a media key to fast-forward or rewind, shuffle, repeat, favorites and playing a track from Up Next all control Qobuz, and like Music, Qobuz follows when you switch the Mac's sound output.
 
-It doesn't modify the Qobuz app bundle, so it keeps working across Qobuz updates as long as the app's internals don't change much. Qobuz plays audio through its own engine instead of Chromium, so macOS never learns what's playing; this tool fills that in. See [How it works](docs/how-it-works.md).
+It doesn't modify the Qobuz app bundle, so it keeps working across Qobuz updates as long as the app's internals don't change much. Qobuz plays audio through its own engine instead of Chromium, so macOS never learns what's playing; this tool fills that in from inside the running app. See [How it works](docs/how-it-works.md).
 
 > Unofficial. Not affiliated with or endorsed by Qobuz.
 
