@@ -9,7 +9,7 @@
 // need the page; the rest go through Qobuz's own menu IPC.
 (() => {
   // Bump when changing this file so the watcher replaces an older injected copy.
-  const VERSION = 4;
+  const VERSION = 6;
   const MARKER = '⁣qobuz-now-playing:';
   const previous = window.__qobuzNowPlaying;
   if (previous && previous.version === VERSION) {
@@ -73,6 +73,22 @@
     return { order, autoplay, index: pq.currentIndex };
   };
 
+  // Qobuz numbers queue items from q1 again for each new queue, and macOS
+  // keeps queue items by id, so it would show the old queue's tracks for the
+  // new one. Ids carry a generation that changes when one comes back as
+  // another track.
+  const newGeneration = () => Date.now().toString(36);
+  let generation = newGeneration();
+  let trackOfId = new Map();
+  const updateGeneration = (items) => {
+    if (items.some((item) => trackOfId.has(item.queueItemId) && trackOfId.get(item.queueItemId) !== item.trackId)) {
+      generation = newGeneration();
+      trackOfId = new Map();
+    }
+    for (const item of items) trackOfId.set(item.queueItemId, item.trackId);
+  };
+  const idOf = (item) => `${generation}.${item.queueItemId}`;
+
   // Ask Qobuz to load tracks it hasn't fetched yet (it does the same for its
   // autoplay panel), at most once each.
   const requested = new Set();
@@ -104,7 +120,7 @@
       if (!info) continue;
       if (item.queueItemId === currentId) current = items.length;
       items.push({
-        id: item.queueItemId,
+        id: idOf(item),
         title: titleOf(info.track),
         artist: info.artist,
         album: info.release ? info.release.title : '',
@@ -139,7 +155,7 @@
       type: 'state',
       track: {
         id: track.id,
-        itemId: order[index] ? order[index].queueItemId : undefined,
+        itemId: order[index] ? idOf(order[index]) : undefined,
         title: titleOf(track),
         artist,
         album: release ? release.title : '',
@@ -181,8 +197,16 @@
 
   let lastState = null;
   let lastQueue = null;
+  // Set while a jump to a queued track is half done (see playItem).
+  let jumping = null;
   const sync = (force) => {
     const state = store.getState();
+    if (jumping) {
+      if (state.playqueue.currentIndex !== jumping.index && Date.now() < jumping.until) return;
+      jumping = null;
+    }
+    const { order, autoplay } = queueOf(state);
+    updateGeneration([...order, ...autoplay]);
     const s = JSON.stringify(stateMessage(state));
     if (force || s !== lastState) {
       lastState = s;
@@ -197,6 +221,7 @@
 
   // Called by the host for commands Qobuz has no menu IPC for.
   let seekTimer = null;
+  let moveInQueue = null;
   const positionNow = () => {
     const { player } = store.getState();
     const pos = player.position || { value: 0 };
@@ -231,14 +256,22 @@
       }
       case 'playItem': {
         const { order } = queueOf(store.getState());
-        const index = order.findIndex((item) => item.queueItemId === value);
+        const index = order.findIndex((item) => idOf(item) === value);
         if (index < 0) return 'not in the play queue';
         // Qobuz's own "play this track in the queue" action, bound to the
-        // store by any mounted track row.
-        const moveInQueue = findProp('moveInQueue', isFunction);
-        if (!moveInQueue) return 'no moveInQueue';
-        moveInQueue({ index });
-        return 'ok';
+        // store by the track rows of playlists and the queue panel. It stays
+        // usable once they're gone, so keep the last one found.
+        moveInQueue = findProp('moveInQueue', isFunction) || moveInQueue;
+        if (moveInQueue) {
+          moveInQueue({ index });
+          return 'ok';
+        }
+        // Nothing on screen offers it (an album page, say): move the queue to
+        // the track before and have the host press Next, which loads the
+        // track as Qobuz's Next does. Reports wait until it has.
+        jumping = { index, until: Date.now() + 2000 };
+        store.dispatch({ type: 'playqueue/jumpTo', payload: { index: index - 1 } });
+        return 'next';
       }
       default:
         return 'unknown command ' + name;

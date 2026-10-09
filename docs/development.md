@@ -30,6 +30,7 @@ The bridge depends on these parts of Qobuz's internals:
 | `userLibrary.chunks.favoriteTracks.mapById` | Favorite |
 | `audioOutputs.current`, `.availables.direct`, `.dictionnary[uid]` (`displayName`, `driverType`, `controllerType` `"JUCE"` for local devices) | Audio output, and the devices Qobuz can follow the Mac's output to |
 | A dispatched `{type: 'LOAD_TRACKS_EPIC', ids}` | Loads queued tracks Qobuz hasn't fetched |
+| A dispatched `{type: 'playqueue/jumpTo', payload: {index}}`, then `media-controls` `next` | Plays a queued track when no `moveInQueue` is on screen |
 | Component props `seek({position})` (ms) and `moveInQueue({index})` | Progress bar's seek action; playing a queued track |
 | Renderer IPC `media-controls` (`togglePlayPause`, `next`, `previous`), `shufflePlayqueue`, `changeLoopMode` (0 off, 1 all, 2 one), `toggleFavorite` (bool), `changeDevice` (`{name: uid, type: driverType}`) | Sent by the host for remote commands and output changes, as Qobuz's Controls and Devices menus do |
 | `globalShortcut` `MediaPlayPause`, `MediaNextTrack`, `MediaPreviousTrack` (main process) | Shortcuts released so Electron doesn't take Now Playing commands |

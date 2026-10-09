@@ -74,18 +74,27 @@ static BOOL attached;                                    // dataSource is set on
 
 // Shared with the data source, which MediaPlayer calls on its own queue.
 // Queue entries are {id, track, playable}, track being the fields described
-// at qnpUpdate. The current entry's id carries a revision ("q12#3"): an item
-// MediaPlayer has fetched only passes on changes made through its typed
-// setters (title, elapsed time and so on), and liked, shuffle, repeat and
-// artwork have none, so a change to those publishes the track as a new item.
+// at qnpUpdate. A track that becomes current keeps its Up Next id ("q12"),
+// as apps that play a queued track check that the player now reports that id.
+// After that the id carries a revision ("q12#3"): an item MediaPlayer has
+// published as current only passes on changes made through its typed setters
+// (title, elapsed time and so on), and liked, shuffle, repeat and artwork have
+// none, so a change to those publishes the track as a new item. That also
+// goes for a track that was current before, which MediaRemote remembers.
 static NSLock *lock;
 static NSArray<NSDictionary *> *pageQueue;               // as the page sent it
 static NSInteger pageCurrent = -1;
 static NSArray<NSDictionary *> *queue;                   // what MediaPlayer gets
 static NSInteger queueCurrent = -1;
 static NSString *currentBase;                            // the page's id for the current track
-static NSString *currentId;                              // currentBase#revision
+static NSString *currentId;                              // currentBase, or currentBase#revision
 static NSUInteger revision;
+static NSMutableSet<NSString *> *usedIds;                // ids published as current before
+// A track played from Up Next keeps its plain id until the app that asked has
+// seen it; changes that need a revision wait until then.
+static NSString *heldBase;
+static NSTimeInterval heldUntil;
+static BOOL pendingRevision;
 static NSDictionary *currentTrack;                       // the current track's fields, without position
 static double currentElapsed;
 static BOOL currentPlaying;
@@ -332,6 +341,8 @@ static NSArray<MPRemoteCommand *> *allCommands(void) {
   return commands;
 }
 
+static void releaseHeld(void);
+
 static void registerCommands(void) {
   MPRemoteCommandCenter *rc = [MPRemoteCommandCenter sharedCommandCenter];
   MPRemoteCommandHandlerStatus ok = MPRemoteCommandHandlerStatusSuccess;
@@ -397,6 +408,15 @@ static void registerCommands(void) {
       BOOL playable = identifier && [queueEntry(identifier)[@"playable"] boolValue];
       [lock unlock];
       if (!playable) return MPRemoteCommandHandlerStatusNoSuchContent;
+      // Vorssaint looks for the new id for 1.5 s.
+      [lock lock];
+      heldBase = baseId(identifier);
+      heldUntil = NSDate.timeIntervalSinceReferenceDate + 2.5;
+      pendingRevision = NO;
+      [lock unlock];
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        GUARDED("releaseHeld", , { releaseHeld(); })
+      });
       emitCommand(@"playItem", baseId(identifier));
       return ok;
     });
@@ -463,6 +483,8 @@ void qnpStart(QNPCommandHandler handler) {
   onCommand = [handler copy];
   lock = [NSLock new];
   contentItems = [NSMutableDictionary dictionary];
+  // Kept across stop and start: MediaRemote remembers ids for the whole process.
+  if (!usedIds) usedIds = [NSMutableSet set];
   targets = [NSMutableArray array];
   wantedEnabled = [NSMutableDictionary dictionary];
   registerCommands();
@@ -500,6 +522,26 @@ static void placeCurrent(void) {
   MPNowPlayingContentItem *item = contentItems[currentId];
   [contentItems removeAllObjects];
   if (item) contentItems[currentId] = item;
+}
+
+// Callers hold the lock.
+static NSString *revisionId(NSString *base) {
+  return [NSString stringWithFormat:@"%@#%lu", base, (unsigned long)++revision];
+}
+
+// Publishes the changes held back for a track played from Up Next.
+static void releaseHeld(void) {
+  if (!started) return;
+  [lock lock];
+  BOOL republish = pendingRevision && currentBase && [currentBase isEqualToString:heldBase];
+  if (republish) {
+    currentId = revisionId(currentBase);
+    placeCurrent();
+  }
+  pendingRevision = NO;
+  heldBase = nil;
+  [lock unlock];
+  if (republish && attached) invalidateQueue();
 }
 
 // state: the current track and player:
@@ -551,12 +593,25 @@ void qnpUpdate(NSDictionary *state) {
   currentElapsed = elapsed;
   currentPlaying = playing;
   currentArtwork = artworkKeys;
-  if (![track isEqualToDictionary:currentTrack] || ![base isEqualToString:currentBase]) {
+  BOOL held = [base isEqualToString:heldBase] && NSDate.timeIntervalSinceReferenceDate < heldUntil;
+  if (![base isEqualToString:currentBase]) {
+    BOOL used = [usedIds containsObject:base];
+    currentId = used && !held ? revisionId(base) : base;
+    pendingRevision = used && held;
+    [usedIds addObject:base];
     currentTrack = [track copy];
     currentBase = base;
-    currentId = [NSString stringWithFormat:@"%@#%lu", base, (unsigned long)++revision];
     placeCurrent();
     republish = YES;
+  } else if (![track isEqualToDictionary:currentTrack]) {
+    currentTrack = [track copy];
+    if (held) {
+      pendingRevision = YES;
+    } else {
+      currentId = revisionId(base);
+      placeCurrent();
+      republish = YES;
+    }
   }
   MPNowPlayingContentItem *item = republish ? nil : contentItems[currentId];
   [lock unlock];
