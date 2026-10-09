@@ -9,7 +9,7 @@
 // need the page; the rest go through Qobuz's own menu IPC.
 (() => {
   // Bump when changing this file so the watcher replaces an older injected copy.
-  const VERSION = 4;
+  const VERSION = 5;
   const MARKER = '⁣qobuz-now-playing:';
   const previous = window.__qobuzNowPlaying;
   if (previous && previous.version === VERSION) {
@@ -181,8 +181,14 @@
 
   let lastState = null;
   let lastQueue = null;
+  // Set while a jump to a queued track is half done (see playItem).
+  let jumping = null;
   const sync = (force) => {
     const state = store.getState();
+    if (jumping) {
+      if (state.playqueue.currentIndex !== jumping.index && Date.now() < jumping.until) return;
+      jumping = null;
+    }
     const s = JSON.stringify(stateMessage(state));
     if (force || s !== lastState) {
       lastState = s;
@@ -197,6 +203,7 @@
 
   // Called by the host for commands Qobuz has no menu IPC for.
   let seekTimer = null;
+  let moveInQueue = null;
   const positionNow = () => {
     const { player } = store.getState();
     const pos = player.position || { value: 0 };
@@ -234,11 +241,19 @@
         const index = order.findIndex((item) => item.queueItemId === value);
         if (index < 0) return 'not in the play queue';
         // Qobuz's own "play this track in the queue" action, bound to the
-        // store by any mounted track row.
-        const moveInQueue = findProp('moveInQueue', isFunction);
-        if (!moveInQueue) return 'no moveInQueue';
-        moveInQueue({ index });
-        return 'ok';
+        // store by the track rows of playlists and the queue panel. It stays
+        // usable once they're gone, so keep the last one found.
+        moveInQueue = findProp('moveInQueue', isFunction) || moveInQueue;
+        if (moveInQueue) {
+          moveInQueue({ index });
+          return 'ok';
+        }
+        // Nothing on screen offers it (an album page, say): move the queue to
+        // the track before and have the host press Next, which loads the
+        // track as Qobuz's Next does. Reports wait until it has.
+        jumping = { index, until: Date.now() + 2000 };
+        store.dispatch({ type: 'playqueue/jumpTo', payload: { index: index - 1 } });
+        return 'next';
       }
       default:
         return 'unknown command ' + name;

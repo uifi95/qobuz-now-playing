@@ -252,7 +252,10 @@ const hostScript = (bridge, nativePath) => `(async () => {
       }
       default:
         page.executeJavaScript('window.__qobuzNowPlaying && window.__qobuzNowPlaying.command('
-          + JSON.stringify(name) + ', ' + JSON.stringify(value) + ')').catch(() => {});
+          + JSON.stringify(name) + ', ' + JSON.stringify(value) + ')')
+          // The bridge asks for Next to finish playing a queued track.
+          .then((result) => { if (result === 'next' && !page.isDestroyed()) page.send('media-controls', 'next'); })
+          .catch(() => {});
     }
   };
   np.start(toPage);
